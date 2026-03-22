@@ -67,21 +67,26 @@ func (e *Engine) CompressContext(messages []types.ChatMessage) []types.ChatMessa
 		return messages // Summarization failed, keep original
 	}
 
-	// Build compressed message list — merge memory into existing system message
-	// to avoid multiple system messages (Mistral and others reject that).
+	// Build compressed message list — merge ALL system messages and memory into
+	// a single system message. Mistral and others reject multiple system messages.
 	memoryBlock := fmt.Sprintf("\n\n[MEMORY] Previous conversation summary: %s", summary)
 
 	var result []types.ChatMessage
 	if len(systemMsgs) > 0 {
-		// Append memory to the first system message
-		merged := systemMsgs[0]
-		merged.Content = flattenContent(merged.Content) + memoryBlock
-		result = append(result, merged)
-		result = append(result, systemMsgs[1:]...)
-	} else {
-		// No system message exists — create one
-		result = append(result, types.ChatMessage{
+		// Merge all system messages + memory into a single system message
+		var parts []string
+		for _, sm := range systemMsgs {
+			parts = append(parts, flattenContent(sm.Content))
+		}
+		merged := types.ChatMessage{
 			Role:    "system",
+			Content: strings.Join(parts, "\n\n") + memoryBlock,
+		}
+		result = append(result, merged)
+	} else {
+		// No system message exists — inject memory as a user message
+		result = append(result, types.ChatMessage{
+			Role:    "user",
 			Content: fmt.Sprintf("[MEMORY] Previous conversation summary: %s", summary),
 		})
 	}
@@ -92,8 +97,8 @@ func (e *Engine) CompressContext(messages []types.ChatMessage) []types.ChatMessa
 }
 
 // InjectMemory merges a memory summary into the existing system message (index 0),
-// or prepends one if no system message exists. This ensures only one system message
-// is present, which is required by providers like Mistral.
+// or prepends it as a user message if no system message exists.
+// This ensures only one system message is present (required by Mistral and others).
 func (e *Engine) InjectMemory(messages []types.ChatMessage, summary string) []types.ChatMessage {
 	if summary == "" {
 		return messages
@@ -108,9 +113,9 @@ func (e *Engine) InjectMemory(messages []types.ChatMessage, summary string) []ty
 		// Merge into existing system message
 		result[0].Content = flattenContent(result[0].Content) + memoryBlock
 	} else {
-		// No system message — prepend one
+		// No system message — prepend as a user message
 		memoryMsg := types.ChatMessage{
-			Role:    "system",
+			Role:    "user",
 			Content: fmt.Sprintf("[MEMORY] Previous conversation summary: %s", summary),
 		}
 		result = append([]types.ChatMessage{memoryMsg}, result...)

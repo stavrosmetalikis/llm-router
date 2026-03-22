@@ -227,6 +227,9 @@ func (r *Router) callProvider(ctx context.Context, req *types.ChatCompletionRequ
 	}
 
 	if retryableStatusCodes[resp.StatusCode] {
+		if resp.StatusCode == 400 {
+			log.Printf("[Router] 400 from %s — request body sent: %s", key.Name, string(reqData))
+		}
 		return nil, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(body))
 	}
 

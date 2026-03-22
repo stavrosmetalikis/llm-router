@@ -61,14 +61,16 @@ func NewKeyPool(keys []*APIKey) *KeyPool {
 	return &KeyPool{tiers: tiers}
 }
 
-// GetAvailableKeys returns the available keys from the highest-priority tier that has
-// at least one non-cooldown key, ordered by round-robin rotation within that tier.
-// Falls to the next tier only when ALL keys in the current tier are in cooldown.
+// GetAvailableKeys returns all available keys across all tiers in priority order.
+// Within each tier, keys are ordered by round-robin rotation.
+// This allows the router to naturally fall through to lower-priority tiers
+// when higher-tier keys get marked as failed during iteration.
 func (p *KeyPool) GetAvailableKeys() []*APIKey {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	now := time.Now()
+	var result []*APIKey
 
 	for _, t := range p.tiers {
 		// Collect available keys in this tier
@@ -80,7 +82,7 @@ func (p *KeyPool) GetAvailableKeys() []*APIKey {
 		}
 
 		if len(available) == 0 {
-			continue // entire tier in cooldown — fall to next tier
+			continue // entire tier in cooldown — skip
 		}
 
 		// Round-robin: rotate the available list starting from t.next
@@ -88,15 +90,12 @@ func (p *KeyPool) GetAvailableKeys() []*APIKey {
 		startIdx := int(t.next % uint64(n))
 		t.next++
 
-		rotated := make([]*APIKey, n)
 		for i := 0; i < n; i++ {
-			rotated[i] = available[(startIdx+i)%n]
+			result = append(result, available[(startIdx+i)%n])
 		}
-
-		return rotated
 	}
 
-	return nil // all tiers exhausted
+	return result
 }
 
 // MarkSuccess resets the failure count and cooldown for a key.
