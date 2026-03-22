@@ -8,20 +8,47 @@ semantic_threshold: 0.92
 gemini_api_key: "YOUR_GEMINI_API_KEY"
 
 keys:
+  # Tier 1 — Primary (fastest, tried first)
   - name: cerebras-1
     provider: cerebras
     key: YOUR_CEREBRAS_KEY
     base_url: https://api.cerebras.ai/v1
     model: qwen-3-235b-a22b-instruct-2507
+    priority: 1
 
+  - name: cerebras-2
+    provider: cerebras
+    key: YOUR_CEREBRAS_KEY_2
+    base_url: https://api.cerebras.ai/v1
+    model: qwen-3-235b-a22b-instruct-2507
+    priority: 1
+
+  - name: cerebras-3
+    provider: cerebras
+    key: YOUR_CEREBRAS_KEY_3
+    base_url: https://api.cerebras.ai/v1
+    model: qwen-3-235b-a22b-instruct-2507
+    priority: 1
+
+  # Tier 2 — Fallback
   - name: groq-1
     provider: groq
     key: YOUR_GROQ_KEY
     base_url: https://api.groq.com/openai/v1
     model: llama-3.1-8b-instant
+    priority: 2
 
+  - name: groq-2
+    provider: groq
+    key: YOUR_GROQ_KEY_2
+    base_url: https://api.groq.com/openai/v1
+    model: llama-3.1-8b-instant
+    priority: 2
+
+  # Tier 3 — Last resort
   - name: mistral-1
     provider: mistral
     key: YOUR_MISTRAL_KEY
     base_url: https://api.mistral.ai/v1
     model: mistral-small
+    priority: 3

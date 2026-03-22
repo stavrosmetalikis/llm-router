@@ -14,6 +14,7 @@ type KeyConfig struct {
 	Key      string `yaml:"key"`
 	BaseURL  string `yaml:"base_url"`
 	Model    string `yaml:"model"`
+	Priority int    `yaml:"priority"`
 }
 
 // Config holds the full application configuration.

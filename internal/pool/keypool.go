@@ -2,6 +2,7 @@ package pool
 
 import (
 	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -13,34 +14,89 @@ type APIKey struct {
 	BaseURL       string
 	Model         string
 	Provider      string
+	Priority      int
 	Failures      int
 	CooldownUntil time.Time
 }
 
-// KeyPool manages an ordered list of API keys with exponential backoff cooldowns.
+// tier groups keys at the same priority level with a round-robin counter.
+type tier struct {
+	priority int
+	keys     []*APIKey
+	next     uint64 // round-robin index
+}
+
+// KeyPool manages keys grouped by priority tiers with round-robin within each tier.
 type KeyPool struct {
-	mu   sync.Mutex
-	keys []*APIKey
+	mu    sync.Mutex
+	tiers []*tier // sorted ascending by priority (1 = highest)
 }
 
-// NewKeyPool creates a new KeyPool from a slice of APIKey definitions.
+// NewKeyPool creates a new KeyPool, grouping keys by Priority and sorting tiers ascending.
 func NewKeyPool(keys []*APIKey) *KeyPool {
-	return &KeyPool{keys: keys}
+	// Group keys by priority
+	tierMap := make(map[int]*tier)
+	for _, k := range keys {
+		p := k.Priority
+		if p <= 0 {
+			p = 1 // default to highest priority
+		}
+		t, ok := tierMap[p]
+		if !ok {
+			t = &tier{priority: p}
+			tierMap[p] = t
+		}
+		t.keys = append(t.keys, k)
+	}
+
+	// Sort tiers by priority ascending
+	tiers := make([]*tier, 0, len(tierMap))
+	for _, t := range tierMap {
+		tiers = append(tiers, t)
+	}
+	sort.Slice(tiers, func(i, j int) bool {
+		return tiers[i].priority < tiers[j].priority
+	})
+
+	return &KeyPool{tiers: tiers}
 }
 
-// GetAvailableKeys returns all keys that are not currently in cooldown, in priority order.
+// GetAvailableKeys returns the available keys from the highest-priority tier that has
+// at least one non-cooldown key, ordered by round-robin rotation within that tier.
+// Falls to the next tier only when ALL keys in the current tier are in cooldown.
 func (p *KeyPool) GetAvailableKeys() []*APIKey {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	now := time.Now()
-	var available []*APIKey
-	for _, k := range p.keys {
-		if now.After(k.CooldownUntil) {
-			available = append(available, k)
+
+	for _, t := range p.tiers {
+		// Collect available keys in this tier
+		var available []*APIKey
+		for _, k := range t.keys {
+			if now.After(k.CooldownUntil) {
+				available = append(available, k)
+			}
 		}
+
+		if len(available) == 0 {
+			continue // entire tier in cooldown — fall to next tier
+		}
+
+		// Round-robin: rotate the available list starting from t.next
+		n := len(available)
+		startIdx := int(t.next % uint64(n))
+		t.next++
+
+		rotated := make([]*APIKey, n)
+		for i := 0; i < n; i++ {
+			rotated[i] = available[(startIdx+i)%n]
+		}
+
+		return rotated
 	}
-	return available
+
+	return nil // all tiers exhausted
 }
 
 // MarkSuccess resets the failure count and cooldown for a key.
@@ -66,12 +122,14 @@ func (p *KeyPool) MarkFailure(key *APIKey) {
 	key.CooldownUntil = time.Now().Add(time.Duration(cooldownSecs) * time.Second)
 }
 
-// AllKeys returns all keys regardless of cooldown status.
+// AllKeys returns all keys across all tiers regardless of cooldown status.
 func (p *KeyPool) AllKeys() []*APIKey {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	result := make([]*APIKey, len(p.keys))
-	copy(result, p.keys)
+	var result []*APIKey
+	for _, t := range p.tiers {
+		result = append(result, t.keys...)
+	}
 	return result
 }

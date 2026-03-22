@@ -13,7 +13,7 @@ Client → LLM Router (:8080) → Cerebras / Groq / Mistral / ...
 | Feature | Description |
 |---|---|
 | **OpenAI-Compatible API** | Drop-in replacement — any client that speaks OpenAI works out of the box |
-| **Multi-Provider Failover** | Routes through providers in priority order; automatically skips failures |
+| **Priority Tier Routing** | Groups providers into priority tiers with round-robin; falls to next tier only when all keys in current tier are in cooldown |
 | **Streaming (SSE)** | Proxies Server-Sent Events directly from provider to client in real-time |
 | **Key Pool & Cooldown** | Exponential backoff per key (2^failures sec, max 60s) — bad keys cool down automatically |
 | **Exact Cache (Redis)** | SHA-256 hash of the full request → cached response with 5-minute TTL |
@@ -95,25 +95,38 @@ semantic_threshold: 0.92     # Cosine similarity threshold (0.0 - 1.0)
 # Gemini API key for generating embeddings (optional — semantic cache disabled without it)
 gemini_api_key: "YOUR_GEMINI_API_KEY"
 
-# Provider keys — tried in order, first success wins
+# Provider keys — grouped by priority tier, round-robin within each tier
 keys:
+  # Tier 1 — Primary (fastest, tried first)
   - name: cerebras-1
     provider: cerebras
     key: YOUR_CEREBRAS_KEY
     base_url: https://api.cerebras.ai/v1
     model: qwen-3-235b-a22b-instruct-2507
+    priority: 1
 
+  - name: cerebras-2
+    provider: cerebras
+    key: YOUR_CEREBRAS_KEY_2
+    base_url: https://api.cerebras.ai/v1
+    model: qwen-3-235b-a22b-instruct-2507
+    priority: 1
+
+  # Tier 2 — Fallback
   - name: groq-1
     provider: groq
     key: YOUR_GROQ_KEY
     base_url: https://api.groq.com/openai/v1
     model: llama-3.1-8b-instant
+    priority: 2
 
+  # Tier 3 — Last resort
   - name: mistral-1
     provider: mistral
     key: YOUR_MISTRAL_KEY
     base_url: https://api.mistral.ai/v1
     model: mistral-small
+    priority: 3
 ```
 
 ### Config Reference
@@ -136,6 +149,7 @@ keys:
 | `key` | API key / bearer token |
 | `base_url` | Provider's OpenAI-compatible base URL (without `/chat/completions`) |
 | `model` | Model name to use with this provider |
+| `priority` | Tier number (1 = highest priority, 2 = fallback, etc.). Defaults to 1 if omitted |
 
 ---
 
@@ -158,9 +172,10 @@ Every incoming request flows through this pipeline in order:
             │
 7. Normalize messages (flatten content arrays)
             │
-8. Try providers in order
+8. Try providers by priority tier (round-robin within tier)
             │   ├── Success → store in caches, reset key failures
-            │   └── Failure (400/401/403/404/429/500) → cooldown, try next
+            │   └── Failure (400/401/403/404/429/500) → cooldown, try next in tier
+            │   └── All in tier cooled down → fall to next tier
             │
 9. Return response (JSON or SSE stream)
 ```
@@ -202,9 +217,27 @@ llm-router/
 
 ## How It Works
 
-### Multi-Provider Failover
+### Priority Tier Routing
 
-Providers are tried in the order defined in `config.yaml`. On failure (HTTP 400, 401, 403, 404, 429, or 500), the router skips to the next provider. Only returns an error if **all** providers fail.
+Providers are grouped into priority tiers via the `priority` field in config (1 = highest). Within each tier, requests are distributed using **round-robin rotation**. The router only falls to the next tier when **all** keys in the current tier are in cooldown. When cooldowns expire, the router automatically returns to the highest-priority tier.
+
+**Example** with 3 Cerebras keys (tier 1), 2 Groq keys (tier 2), 1 Mistral key (tier 3):
+
+```
+Request 1 → Cerebras-1
+Request 2 → Cerebras-2
+Request 3 → Cerebras-3
+Request 4 → Cerebras-1  (round-robin wraps)
+  ... Cerebras-1 hits 429, enters cooldown ...
+Request 5 → Cerebras-2  (skips cooled-down Cerebras-1)
+  ... all Cerebras keys in cooldown ...
+Request 6 → Groq-1      (falls to tier 2)
+Request 7 → Groq-2
+  ... Cerebras-1 cooldown expires ...
+Request 8 → Cerebras-1  (automatically back to tier 1)
+```
+
+On failure (HTTP 400, 401, 403, 404, 429, or 500), the router skips to the next key. Only returns an error if **all** providers across **all** tiers fail.
 
 ### Key Cooldown
 

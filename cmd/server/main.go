@@ -37,6 +37,7 @@ func main() {
 			BaseURL:  k.BaseURL,
 			Model:    k.Model,
 			Provider: k.Provider,
+			Priority: k.Priority,
 		})
 	}
 	keyPool := pool.NewKeyPool(keys)
