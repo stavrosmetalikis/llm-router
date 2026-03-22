@@ -140,6 +140,9 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 		return nil, fmt.Errorf("no available providers (all in cooldown)")
 	}
 
+	// Pre-serialize request for 400 diagnostics
+	reqSnapshot, _ := json.Marshal(req)
+
 	var lastErr error
 	for _, key := range keys {
 		log.Printf("[Router] Trying provider %s (%s) for streaming", key.Name, key.Provider)
@@ -154,10 +157,18 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 
 		// Check for retryable status codes
 		if retryableStatusCodes[sresp.StatusCode] {
-			log.Printf("[Router] Provider %s returned %d, trying next", key.Name, sresp.StatusCode)
+			// Drain the body before closing to prevent hanging on streaming connections
+			errBody, _ := io.ReadAll(sresp.Body)
 			sresp.Body.Close()
+
+			if sresp.StatusCode == 400 {
+				log.Printf("[Router] 400 from %s (streaming) — request body: %s — response: %s", key.Name, string(reqSnapshot), string(errBody))
+			} else {
+				log.Printf("[Router] Provider %s returned %d, trying next — response: %s", key.Name, sresp.StatusCode, string(errBody))
+			}
+
 			r.KeyPool.MarkFailure(key)
-			lastErr = fmt.Errorf("provider %s returned status %d", key.Name, sresp.StatusCode)
+			lastErr = fmt.Errorf("provider %s returned status %d: %s", key.Name, sresp.StatusCode, string(errBody))
 			continue
 		}
 
