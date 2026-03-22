@@ -28,6 +28,28 @@ var retryableStatusCodes = map[int]bool{
 	500: true,
 }
 
+// estimateTokens provides a rough token count estimate for a request.
+// Uses ~4 characters per token as a conservative approximation.
+func estimateTokens(req *types.ChatCompletionRequest) int {
+	totalChars := 0
+	for _, m := range req.Messages {
+		totalChars += len(flattenContent(m.Content))
+		// Account for role, tool calls, etc.
+		totalChars += 10
+	}
+	// Account for tools definitions if present
+	if len(req.Tools) > 0 {
+		for _, t := range req.Tools {
+			totalChars += len(t.Function.Name) + len(t.Function.Description) + 50
+			if t.Function.Parameters != nil {
+				paraBytes, _ := json.Marshal(t.Function.Parameters)
+				totalChars += len(paraBytes)
+			}
+		}
+	}
+	return totalChars / 4
+}
+
 // Router is the core orchestrator that implements the full request pipeline.
 type Router struct {
 	KeyPool       *pool.KeyPool
@@ -179,11 +201,20 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 	}
 	keys, sessionID := r.orderKeysWithSticky(keys, req.Messages)
 
+	// Estimate token count for context limit checking
+	estimatedTokens := estimateTokens(req)
+
 	// Pre-serialize request for 400 diagnostics
 	reqSnapshot, _ := json.Marshal(req)
 
 	var lastErr error
 	for _, key := range keys {
+		// Skip providers whose context window is too small
+		if key.MaxContextTokens > 0 && estimatedTokens > key.MaxContextTokens {
+			log.Printf("[Router] Skipping %s: estimated %d tokens exceeds limit %d", key.Name, estimatedTokens, key.MaxContextTokens)
+			continue
+		}
+
 		log.Printf("[Router] Trying provider %s (%s) for streaming", key.Name, key.Provider)
 
 		sresp, err := r.callProviderStreaming(ctx, req, key)
@@ -228,9 +259,16 @@ func (r *Router) tryProviders(ctx context.Context, req *types.ChatCompletionRequ
 		return nil, fmt.Errorf("no available providers (all in cooldown)")
 	}
 	keys, sessionID := r.orderKeysWithSticky(keys, req.Messages)
+	estimatedTokens := estimateTokens(req)
 
 	var lastErr error
 	for _, key := range keys {
+		// Skip providers whose context window is too small
+		if key.MaxContextTokens > 0 && estimatedTokens > key.MaxContextTokens {
+			log.Printf("[Router] Skipping %s: estimated %d tokens exceeds limit %d", key.Name, estimatedTokens, key.MaxContextTokens)
+			continue
+		}
+
 		log.Printf("[Router] Trying provider %s (%s)", key.Name, key.Provider)
 
 		resp, err := r.callProvider(ctx, req, key)

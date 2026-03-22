@@ -15,6 +15,7 @@ keys:
     base_url: https://api.cerebras.ai/v1
     model: qwen-3-235b-a22b-instruct-2507
     priority: 1
+    max_context_tokens: 32768
 
   - name: cerebras-2
     provider: cerebras
@@ -22,6 +23,7 @@ keys:
     base_url: https://api.cerebras.ai/v1
     model: qwen-3-235b-a22b-instruct-2507
     priority: 1
+    max_context_tokens: 32768
 
   - name: cerebras-3
     provider: cerebras
@@ -29,6 +31,7 @@ keys:
     base_url: https://api.cerebras.ai/v1
     model: qwen-3-235b-a22b-instruct-2507
     priority: 1
+    max_context_tokens: 32768
 
   # Tier 2 — Fallback
   - name: groq-1
@@ -37,6 +40,7 @@ keys:
     base_url: https://api.groq.com/openai/v1
     model: llama-3.1-8b-instant
     priority: 2
+    max_context_tokens: 8192
 
   - name: groq-2
     provider: groq
@@ -44,6 +48,7 @@ keys:
     base_url: https://api.groq.com/openai/v1
     model: llama-3.1-8b-instant
     priority: 2
+    max_context_tokens: 8192
 
   # Tier 3 — Last resort
   - name: mistral-1
@@ -52,3 +57,4 @@ keys:
     base_url: https://api.mistral.ai/v1
     model: mistral-small
     priority: 3
+    max_context_tokens: 32768

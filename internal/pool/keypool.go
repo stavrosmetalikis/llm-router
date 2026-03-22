@@ -9,14 +9,15 @@ import (
 
 // APIKey represents a single provider API key with cooldown tracking.
 type APIKey struct {
-	Name          string
-	Key           string
-	BaseURL       string
-	Model         string
-	Provider      string
-	Priority      int
-	Failures      int
-	CooldownUntil time.Time
+	Name             string
+	Key              string
+	BaseURL          string
+	Model            string
+	Provider         string
+	Priority         int
+	MaxContextTokens int
+	Failures         int
+	CooldownUntil    time.Time
 }
 
 // tier groups keys at the same priority level with a round-robin counter.

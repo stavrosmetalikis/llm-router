@@ -32,12 +32,13 @@ func main() {
 	var keys []*pool.APIKey
 	for _, k := range cfg.Keys {
 		keys = append(keys, &pool.APIKey{
-			Name:     k.Name,
-			Key:      k.Key,
-			BaseURL:  k.BaseURL,
-			Model:    k.Model,
-			Provider: k.Provider,
-			Priority: k.Priority,
+			Name:             k.Name,
+			Key:              k.Key,
+			BaseURL:          k.BaseURL,
+			Model:            k.Model,
+			Provider:         k.Provider,
+			Priority:         k.Priority,
+			MaxContextTokens: k.MaxContextTokens,
 		})
 	}
 	keyPool := pool.NewKeyPool(keys)

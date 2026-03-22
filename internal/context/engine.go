@@ -125,6 +125,7 @@ func (e *Engine) InjectMemory(messages []types.ChatMessage, summary string) []ty
 }
 
 // summarize uses a cheap/fast provider to generate a conversation summary.
+// Tries each available key in order until one succeeds.
 func (e *Engine) summarize(messages []types.ChatMessage) string {
 	keys := e.keyPool.GetAvailableKeys()
 	if len(keys) == 0 {
@@ -132,69 +133,73 @@ func (e *Engine) summarize(messages []types.ChatMessage) string {
 		return ""
 	}
 
-	// Build a prompt for summarization
+	// Build the conversation text to summarize
 	var sb strings.Builder
 	for _, m := range messages {
 		content := flattenContent(m.Content)
 		sb.WriteString(fmt.Sprintf("%s: %s\n", m.Role, content))
 	}
+	conversationText := sb.String()
 
-	summaryReq := types.ChatCompletionRequest{
-		Model: keys[0].Model,
-		Messages: []types.ChatMessage{
-			{
-				Role:    "system",
-				Content: "Summarize the following conversation concisely in 2-3 sentences. Focus on key topics, decisions, and context that would be needed to continue the conversation.",
+	// Try each available key until one succeeds
+	for _, key := range keys {
+		summaryReq := types.ChatCompletionRequest{
+			Model: key.Model,
+			Messages: []types.ChatMessage{
+				{
+					Role:    "system",
+					Content: "Summarize the following conversation concisely in 2-3 sentences. Focus on key topics, decisions, and context that would be needed to continue the conversation.",
+				},
+				{
+					Role:    "user",
+					Content: conversationText,
+				},
 			},
-			{
-				Role:    "user",
-				Content: sb.String(),
-			},
-		},
+		}
+
+		reqData, err := json.Marshal(summaryReq)
+		if err != nil {
+			log.Printf("[Context] Failed to marshal summary request: %v", err)
+			continue
+		}
+
+		url := fmt.Sprintf("%s/chat/completions", strings.TrimRight(key.BaseURL, "/"))
+		req, err := http.NewRequest("POST", url, bytes.NewReader(reqData))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+key.Key)
+
+		resp, err := e.client.Do(req)
+		if err != nil {
+			log.Printf("[Context] Summary request to %s failed: %v", key.Name, err)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("[Context] Summary API %s returned %d: %s", key.Name, resp.StatusCode, string(body))
+			continue
+		}
+
+		var completionResp types.ChatCompletionResponse
+		if err := json.Unmarshal(body, &completionResp); err != nil {
+			continue
+		}
+
+		if len(completionResp.Choices) > 0 && completionResp.Choices[0].Message.Content != "" {
+			log.Printf("[Context] Summary generated via %s (%s)", key.Name, key.Model)
+			return completionResp.Choices[0].Message.Content
+		}
 	}
 
-	reqData, err := json.Marshal(summaryReq)
-	if err != nil {
-		log.Printf("[Context] Failed to marshal summary request: %v", err)
-		return ""
-	}
-
-	// Try first available key
-	key := keys[0]
-	url := fmt.Sprintf("%s/chat/completions", strings.TrimRight(key.BaseURL, "/"))
-	req, err := http.NewRequest("POST", url, bytes.NewReader(reqData))
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Key)
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		log.Printf("[Context] Summary request failed: %v", err)
-		return ""
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ""
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[Context] Summary API returned %d: %s", resp.StatusCode, string(body))
-		return ""
-	}
-
-	var completionResp types.ChatCompletionResponse
-	if err := json.Unmarshal(body, &completionResp); err != nil {
-		return ""
-	}
-
-	if len(completionResp.Choices) > 0 {
-		return completionResp.Choices[0].Message.Content
-	}
-
+	log.Printf("[Context] All keys failed for summarization")
 	return ""
 }
 

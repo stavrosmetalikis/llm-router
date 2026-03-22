@@ -9,12 +9,13 @@ import (
 
 // KeyConfig represents a single provider key entry in the config file.
 type KeyConfig struct {
-	Name     string `yaml:"name"`
-	Provider string `yaml:"provider"`
-	Key      string `yaml:"key"`
-	BaseURL  string `yaml:"base_url"`
-	Model    string `yaml:"model"`
-	Priority int    `yaml:"priority"`
+	Name             string `yaml:"name"`
+	Provider         string `yaml:"provider"`
+	Key              string `yaml:"key"`
+	BaseURL          string `yaml:"base_url"`
+	Model            string `yaml:"model"`
+	Priority         int    `yaml:"priority"`
+	MaxContextTokens int    `yaml:"max_context_tokens"`
 }
 
 // Config holds the full application configuration.
