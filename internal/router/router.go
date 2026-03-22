@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"llm-router/internal/cache"
-	ctxengine "llm-router/internal/context"
 	"llm-router/internal/embedding"
 	"llm-router/internal/pool"
 	"llm-router/internal/types"
@@ -58,7 +57,6 @@ type Router struct {
 	SemanticCache *cache.SemanticCache
 	InflightCache *cache.InflightCache
 	Embedder      *embedding.GeminiClient
-	CtxEngine     *ctxengine.Engine
 	HTTPClient    *http.Client
 }
 
@@ -70,7 +68,6 @@ func NewRouter(
 	semanticCache *cache.SemanticCache,
 	inflightCache *cache.InflightCache,
 	embedder *embedding.GeminiClient,
-	ctxEngine *ctxengine.Engine,
 ) *Router {
 	return &Router{
 		KeyPool:       keyPool,
@@ -79,7 +76,6 @@ func NewRouter(
 		SemanticCache: semanticCache,
 		InflightCache: inflightCache,
 		Embedder:      embedder,
-		CtxEngine:     ctxEngine,
 		HTTPClient:    &http.Client{Timeout: 120 * time.Second},
 	}
 }
@@ -164,10 +160,7 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 		}
 	}
 
-	// Step 5: Compress context if needed
-	req.Messages = r.CtxEngine.CompressContext(req.Messages)
-
-	// Step 6: Normalize messages
+	// Normalize messages (flatten content arrays to strings)
 	normalizeMessages(req.Messages)
 
 	// Step 7: Try providers (sticky preferred first, then tier rotation)
@@ -188,10 +181,7 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 // HandleStreamingRequest processes a streaming chat completion request.
 // Returns a StreamingResponse with the raw SSE body from the provider.
 func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatCompletionRequest) (*StreamingResponse, error) {
-	// Compress context if needed
-	req.Messages = r.CtxEngine.CompressContext(req.Messages)
-
-	// Normalize messages
+	// Normalize messages (flatten content arrays to strings)
 	normalizeMessages(req.Messages)
 
 	// Get keys with sticky preference applied

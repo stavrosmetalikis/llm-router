@@ -1,7 +1,6 @@
 # LLM Router Configuration
 
 redis_addr: "localhost:6379"
-max_messages: 12
 semantic_cache_size: 100
 semantic_threshold: 0.92
 

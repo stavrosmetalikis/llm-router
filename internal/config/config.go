@@ -23,7 +23,6 @@ type Config struct {
 	Keys              []KeyConfig `yaml:"keys"`
 	GeminiAPIKey      string      `yaml:"gemini_api_key"`
 	RedisAddr         string      `yaml:"redis_addr"`
-	MaxMessages       int         `yaml:"max_messages"`
 	SemanticCacheSize int         `yaml:"semantic_cache_size"`
 	SemanticThreshold float64     `yaml:"semantic_threshold"`
 }
@@ -41,9 +40,6 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Apply defaults
-	if cfg.MaxMessages <= 0 {
-		cfg.MaxMessages = 12
-	}
 	if cfg.SemanticCacheSize <= 0 {
 		cfg.SemanticCacheSize = 100
 	}
