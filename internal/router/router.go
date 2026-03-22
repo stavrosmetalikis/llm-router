@@ -31,6 +31,7 @@ var retryableStatusCodes = map[int]bool{
 // Router is the core orchestrator that implements the full request pipeline.
 type Router struct {
 	KeyPool       *pool.KeyPool
+	StickyStore   *pool.StickyStore
 	ExactCache    *cache.ExactCache
 	SemanticCache *cache.SemanticCache
 	InflightCache *cache.InflightCache
@@ -42,6 +43,7 @@ type Router struct {
 // NewRouter creates a new Router with all components wired together.
 func NewRouter(
 	keyPool *pool.KeyPool,
+	stickyStore *pool.StickyStore,
 	exactCache *cache.ExactCache,
 	semanticCache *cache.SemanticCache,
 	inflightCache *cache.InflightCache,
@@ -50,6 +52,7 @@ func NewRouter(
 ) *Router {
 	return &Router{
 		KeyPool:       keyPool,
+		StickyStore:   stickyStore,
 		ExactCache:    exactCache,
 		SemanticCache: semanticCache,
 		InflightCache: inflightCache,
@@ -64,6 +67,41 @@ type StreamingResponse struct {
 	Body       io.ReadCloser
 	StatusCode int
 	Model      string
+}
+
+// sessionKeyFromRequest derives a session key from the request messages.
+func sessionKeyFromRequest(messages []types.ChatMessage) string {
+	converted := make([]pool.ChatMessage, len(messages))
+	for i, m := range messages {
+		converted[i] = pool.ChatMessage{Role: m.Role, Content: m.Content}
+	}
+	return pool.SessionKey(converted)
+}
+
+// orderKeysWithSticky reorders keys so the sticky preferred key comes first.
+// Returns the keys in order and the session ID for later updates.
+func (r *Router) orderKeysWithSticky(keys []*pool.APIKey, messages []types.ChatMessage) ([]*pool.APIKey, string) {
+	sessionID := sessionKeyFromRequest(messages)
+	preferred := r.StickyStore.Get(sessionID)
+	if preferred == "" {
+		return keys, sessionID
+	}
+
+	// Find the preferred key and move it to the front
+	for i, k := range keys {
+		if k.Name == preferred {
+			reordered := make([]*pool.APIKey, 0, len(keys))
+			reordered = append(reordered, k)
+			reordered = append(reordered, keys[:i]...)
+			reordered = append(reordered, keys[i+1:]...)
+			log.Printf("[Sticky] Session %s: trying preferred provider %s first", sessionID[:8], preferred)
+			return reordered, sessionID
+		}
+	}
+
+	// Preferred key not available (in cooldown) — fall through normally
+	log.Printf("[Sticky] Session %s: preferred provider %s not available, falling back to tier rotation", sessionID[:8], preferred)
+	return keys, sessionID
 }
 
 // HandleRequest processes a non-streaming chat completion request through the full pipeline.
@@ -110,8 +148,8 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 	// Step 6: Normalize messages
 	normalizeMessages(req.Messages)
 
-	// Step 7: Try providers in order
-	resp, err := r.tryProviders(ctx, req, false)
+	// Step 7: Try providers (sticky preferred first, then tier rotation)
+	resp, err := r.tryProviders(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -134,11 +172,12 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 	// Normalize messages
 	normalizeMessages(req.Messages)
 
-	// Try providers in order for streaming
+	// Get keys with sticky preference applied
 	keys := r.KeyPool.GetAvailableKeys()
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("no available providers (all in cooldown)")
 	}
+	keys, sessionID := r.orderKeysWithSticky(keys, req.Messages)
 
 	// Pre-serialize request for 400 diagnostics
 	reqSnapshot, _ := json.Marshal(req)
@@ -173,6 +212,7 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 		}
 
 		r.KeyPool.MarkSuccess(key)
+		r.StickyStore.Set(sessionID, key.Name)
 		sresp.Model = key.Model
 		return sresp, nil
 	}
@@ -181,11 +221,13 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 }
 
 // tryProviders attempts each available provider in order for non-streaming requests.
-func (r *Router) tryProviders(ctx context.Context, req *types.ChatCompletionRequest, stream bool) (*types.ChatCompletionResponse, error) {
+// Sticky preferred provider is tried first, then falls back to tier rotation.
+func (r *Router) tryProviders(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
 	keys := r.KeyPool.GetAvailableKeys()
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("no available providers (all in cooldown)")
 	}
+	keys, sessionID := r.orderKeysWithSticky(keys, req.Messages)
 
 	var lastErr error
 	for _, key := range keys {
@@ -200,6 +242,7 @@ func (r *Router) tryProviders(ctx context.Context, req *types.ChatCompletionRequ
 		}
 
 		r.KeyPool.MarkSuccess(key)
+		r.StickyStore.Set(sessionID, key.Name)
 		return resp, nil
 	}
 

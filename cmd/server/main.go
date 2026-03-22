@@ -58,8 +58,12 @@ func main() {
 	// Initialize context engine
 	ctxEngine := ctxengine.NewEngine(cfg.MaxMessages, keyPool)
 
+	// Initialize sticky session store
+	stickyStore := pool.NewStickyStore()
+	log.Printf("[Main] Sticky routing enabled (30min TTL)")
+
 	// Initialize router with all components
-	r := router.NewRouter(keyPool, exactCache, semanticCache, inflightCache, embedder, ctxEngine)
+	r := router.NewRouter(keyPool, stickyStore, exactCache, semanticCache, inflightCache, embedder, ctxEngine)
 
 	// Create and start server
 	server := api.NewServer(r)
