@@ -151,6 +151,17 @@ keys:
 | `model` | Model name to use with this provider |
 | `priority` | Tier number (1 = highest priority, 2 = fallback, etc.). Defaults to 1 if omitted |
 
+### Known Working Models
+
+| Provider | Model | Notes |
+|---|---|---|
+| Cerebras | `qwen-3-235b-a22b-instruct-2507` | Fast inference, good for primary tier |
+| Groq | `llama-3.1-8b-instant` | Low latency, good fallback |
+| Groq | `llama-3.3-70b-versatile` | Higher quality, slower |
+| Mistral | `mistral-small` | Only accepts **one** system message (memory is merged, not injected separately) |
+| Mistral | `mistral-medium-latest` | Same system message constraint |
+| Mistral | `mistral-large-latest` | Same system message constraint |
+
 ---
 
 ## Request Pipeline
