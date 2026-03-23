@@ -132,6 +132,29 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 		for scanner.Scan() {
 			line := scanner.Text()
 
+			// Intercept [DONE] — inject usage chunk before it
+			if line == "data: [DONE]" {
+				if sresp.Usage != nil {
+					usageData, _ := json.Marshal(map[string]interface{}{
+						"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+						"object":  "chat.completion.chunk",
+						"created": time.Now().Unix(),
+						"choices": []interface{}{},
+						"usage":   sresp.Usage,
+					})
+					fmt.Fprintf(w, "data: %s\n\n", usageData)
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+				// Now forward the actual [DONE]
+				fmt.Fprintf(w, "%s\n\n", line)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				return false
+			}
+
 			// Forward the SSE line as-is
 			fmt.Fprintf(w, "%s\n", line)
 
@@ -143,17 +166,6 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 
 		if err := scanner.Err(); err != nil {
 			log.Printf("[Server] SSE scan error: %v", err)
-		}
-
-		if sresp.Usage != nil {
-			usageData, _ := json.Marshal(map[string]interface{}{
-				"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
-				"choices": []interface{}{},
-				"usage":   sresp.Usage,
-			})
-			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", usageData)
 		}
 
 		return false // Stop streaming
