@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout,
 
 # Try to import claw-compactor; if unavailable, compression is a no-op
 try:
-    from claw_compactor import FusionEngine
+    from claw_compactor.fusion.engine import FusionEngine
     engine = FusionEngine()
     COMPACTOR_AVAILABLE = True
     logging.info("claw-compactor loaded successfully")
