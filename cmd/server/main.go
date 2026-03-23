@@ -6,6 +6,7 @@ import (
 
 	"llm-router/internal/api"
 	"llm-router/internal/cache"
+	"llm-router/internal/compressor"
 	"llm-router/internal/config"
 	"llm-router/internal/embedding"
 	"llm-router/internal/pool"
@@ -59,8 +60,16 @@ func main() {
 	stickyStore := pool.NewStickyStore()
 	log.Printf("[Main] Sticky routing enabled (30min TTL)")
 
+	// Initialize compressor (claw-compactor sidecar client)
+	comp := compressor.NewCompressor(cfg.CompressorEnabled)
+	if cfg.CompressorEnabled {
+		log.Printf("[Main] Claw-compactor sidecar compression enabled (localhost:8081)")
+	} else {
+		log.Printf("[Main] Claw-compactor compression disabled")
+	}
+
 	// Initialize router with all components
-	r := router.NewRouter(keyPool, stickyStore, exactCache, semanticCache, inflightCache, embedder)
+	r := router.NewRouter(keyPool, stickyStore, exactCache, semanticCache, inflightCache, embedder, comp)
 
 	// Create and start server
 	server := api.NewServer(r)

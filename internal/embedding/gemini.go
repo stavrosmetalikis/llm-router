@@ -2,19 +2,26 @@ package embedding
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
 const geminiEmbeddingURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 
 // GeminiClient generates text embeddings via the Gemini Embedding API.
+// Includes an in-memory cache keyed by SHA-256 hash of the input text.
 type GeminiClient struct {
 	apiKey string
 	client *http.Client
+	mu     sync.RWMutex
+	cache  map[string][]float64
 }
 
 // NewGeminiClient creates a new GeminiClient with the given API key.
@@ -22,6 +29,7 @@ func NewGeminiClient(apiKey string) *GeminiClient {
 	return &GeminiClient{
 		apiKey: apiKey,
 		client: &http.Client{Timeout: 10 * time.Second},
+		cache:  make(map[string][]float64),
 	}
 }
 
@@ -46,10 +54,24 @@ type embeddingResponse struct {
 }
 
 // Embed generates an embedding vector for the given text.
+// Results are cached in-memory keyed by SHA-256 hash of the input.
 func (g *GeminiClient) Embed(text string) ([]float64, error) {
 	if g.apiKey == "" {
 		return nil, fmt.Errorf("gemini API key not configured")
 	}
+
+	// Hash the input text for cache lookup
+	hash := sha256.Sum256([]byte(text))
+	cacheKey := hex.EncodeToString(hash[:])
+
+	// Check cache (read lock)
+	g.mu.RLock()
+	if cached, ok := g.cache[cacheKey]; ok {
+		g.mu.RUnlock()
+		log.Printf("[Embedding] Cache hit for hash %s...", cacheKey[:12])
+		return cached, nil
+	}
+	g.mu.RUnlock()
 
 	reqBody := embeddingRequest{
 		Content: embeddingContent{
@@ -92,6 +114,12 @@ func (g *GeminiClient) Embed(text string) ([]float64, error) {
 	if len(embResp.Embedding.Values) == 0 {
 		return nil, fmt.Errorf("embedding API returned empty embedding")
 	}
+
+	// Store in cache (write lock)
+	g.mu.Lock()
+	g.cache[cacheKey] = embResp.Embedding.Values
+	g.mu.Unlock()
+	log.Printf("[Embedding] Cached embedding for hash %s... (cache size: %d)", cacheKey[:12], len(g.cache))
 
 	return embResp.Embedding.Values, nil
 }

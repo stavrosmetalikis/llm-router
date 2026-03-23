@@ -25,6 +25,7 @@ type Config struct {
 	RedisAddr         string      `yaml:"redis_addr"`
 	SemanticCacheSize int         `yaml:"semantic_cache_size"`
 	SemanticThreshold float64     `yaml:"semantic_threshold"`
+	CompressorEnabled bool        `yaml:"compressor_enabled"`
 }
 
 // Load reads and parses a YAML config file at the given path.

@@ -19,8 +19,7 @@ Client → LLM Router (:8080) → Cerebras / Groq / Mistral / ...
 | **Exact Cache (Redis)** | SHA-256 hash of the full request → cached response with 5-minute TTL |
 | **Semantic Cache (In-Memory)** | Cosine similarity on Gemini embeddings — returns cached responses for semantically similar questions |
 | **In-Flight Deduplication** | Identical concurrent requests (e.g. double-tap) share a single provider call |
-| **Context Compression** | Summarizes old messages into a `[MEMORY]` system message to prevent context window overflow |
-| **Memory Injection** | When switching providers, injects conversation history so the new model has context |
+
 | **Tool Call Support** | Passes through `tools`, `tool_choice`, and `tool_calls` for function-calling workflows |
 | **Message Normalization** | Handles `content` as both `"string"` and `[{"type":"text","text":"..."}]` formats |
 
@@ -85,15 +84,15 @@ All settings live in `configs/config.yaml`. Override the path with the `LLM_ROUT
 # Redis address for exact cache (optional)
 redis_addr: "localhost:6379"
 
-# Maximum messages before context compression kicks in
-max_messages: 12
-
 # Semantic cache settings
 semantic_cache_size: 100     # Max LRU entries
 semantic_threshold: 0.92     # Cosine similarity threshold (0.0 - 1.0)
 
 # Gemini API key for generating embeddings (optional — semantic cache disabled without it)
 gemini_api_key: "YOUR_GEMINI_API_KEY"
+
+# Enable claw-compactor sidecar for token compression (optional)
+compressor_enabled: false
 
 # Provider keys — grouped by priority tier, round-robin within each tier
 keys:
@@ -134,10 +133,10 @@ keys:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `redis_addr` | string | `localhost:6379` | Redis server address. If unreachable, exact cache is silently disabled |
-| `max_messages` | int | `12` | Message count threshold before context compression activates |
 | `semantic_cache_size` | int | `100` | Maximum entries in the in-memory semantic LRU cache |
 | `semantic_threshold` | float | `0.92` | Minimum cosine similarity to consider a semantic cache hit |
 | `gemini_api_key` | string | — | API key for Gemini Embedding API. Semantic cache disabled if empty |
+| `compressor_enabled` | bool | `false` | Enable claw-compactor sidecar for token compression (requires sidecar on :8081) |
 | `keys` | list | — | Ordered list of provider keys (see below) |
 
 ### Key Entry Fields
@@ -179,7 +178,7 @@ Every incoming request flows through this pipeline in order:
             │
 5. Semantic cache ──→ similar enough? return cached
             │
-6. Context compression (if messages > max_messages)
+6. Compress messages (claw-compactor sidecar, if enabled)
             │
 7. Normalize messages (flatten content arrays)
             │
@@ -208,10 +207,10 @@ llm-router/
 │   │   ├── exact.go            # Redis exact cache (SHA-256 hash, 5min TTL)
 │   │   ├── inflight.go         # In-flight request deduplication
 │   │   └── semantic.go         # In-memory LRU cache with cosine similarity
+│   ├── compressor/
+│   │   └── compressor.go       # Claw-compactor sidecar client (optional)
 │   ├── config/
 │   │   └── config.go           # YAML config loader with defaults
-│   ├── context/
-│   │   └── engine.go           # Context compression + memory injection
 │   ├── embedding/
 │   │   └── gemini.go           # Gemini Embedding API client
 │   ├── pool/
@@ -220,6 +219,10 @@ llm-router/
 │   │   └── router.go           # Core routing orchestrator, failover logic
 │   └── types/
 │       └── types.go            # Shared OpenAI-compatible structs
+├── compressor/
+│   ├── main.py                 # Claw-compactor Flask sidecar (port 8081)
+│   ├── requirements.txt
+│   └── setup.sh                # Install claw-compactor + dependencies
 ├── go.mod
 └── go.sum
 ```
@@ -270,15 +273,9 @@ If a Gemini API key is configured, the router embeds the last user message and c
 
 The cache uses LRU eviction and has a configurable max size.
 
-### Context Compression
+### Token Compression (Claw-Compactor)
 
-When conversations exceed `max_messages` (default 12), older messages are summarized by calling a cheap/fast provider. The summary is injected as a system message:
-
-```
-[MEMORY] Previous conversation summary: {summary}
-```
-
-This prevents context window overflow when history accumulates.
+When `compressor_enabled: true`, the router sends messages through a claw-compactor sidecar (Python, port 8081) before forwarding to providers. This performs deterministic token compression with zero LLM calls — 54% average compression, 81% on JSON. If the sidecar is unreachable, messages pass through unchanged.
 
 ### Message Normalization
 

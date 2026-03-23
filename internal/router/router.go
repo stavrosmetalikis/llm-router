@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"llm-router/internal/cache"
+	"llm-router/internal/compressor"
 	"llm-router/internal/embedding"
 	"llm-router/internal/pool"
 	"llm-router/internal/types"
@@ -27,12 +28,28 @@ var retryableStatusCodes = map[int]bool{
 	500: true,
 }
 
+// codeMarkers are strings whose presence suggest code or structured (JSON) content.
+var codeMarkers = []string{"{", "}", "func ", "def ", "class ", "=>", "//", "/*", "import ", "return ", "\"type\":", "\"key\":"}
+
+// looksLikeCode returns true if the text appears to contain code or JSON content.
+func looksLikeCode(text string) bool {
+	for _, marker := range codeMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // estimateTokens provides a rough token count estimate for a request.
-// Uses ~4 characters per token as a conservative approximation.
+// Uses ~3 characters per token for code/JSON content and ~4 for natural language.
 func estimateTokens(req *types.ChatCompletionRequest) int {
 	totalChars := 0
+	var allContent strings.Builder
 	for _, m := range req.Messages {
-		totalChars += len(flattenContent(m.Content))
+		text := flattenContent(m.Content)
+		totalChars += len(text)
+		allContent.WriteString(text)
 		// Account for role, tool calls, etc.
 		totalChars += 10
 	}
@@ -46,6 +63,11 @@ func estimateTokens(req *types.ChatCompletionRequest) int {
 			}
 		}
 	}
+
+	// Use chars/3 for code-heavy content, chars/4 for natural language
+	if looksLikeCode(allContent.String()) {
+		return totalChars / 3
+	}
 	return totalChars / 4
 }
 
@@ -57,6 +79,7 @@ type Router struct {
 	SemanticCache *cache.SemanticCache
 	InflightCache *cache.InflightCache
 	Embedder      *embedding.GeminiClient
+	Compressor    *compressor.Compressor
 	HTTPClient    *http.Client
 }
 
@@ -68,6 +91,7 @@ func NewRouter(
 	semanticCache *cache.SemanticCache,
 	inflightCache *cache.InflightCache,
 	embedder *embedding.GeminiClient,
+	comp *compressor.Compressor,
 ) *Router {
 	return &Router{
 		KeyPool:       keyPool,
@@ -76,6 +100,7 @@ func NewRouter(
 		SemanticCache: semanticCache,
 		InflightCache: inflightCache,
 		Embedder:      embedder,
+		Compressor:    comp,
 		HTTPClient:    &http.Client{Timeout: 120 * time.Second},
 	}
 }
@@ -160,6 +185,9 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 		}
 	}
 
+	// Compress messages via claw-compactor sidecar (if enabled)
+	req.Messages = r.Compressor.Compress(req.Messages)
+
 	// Normalize messages (flatten content arrays to strings)
 	normalizeMessages(req.Messages)
 
@@ -181,6 +209,9 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 // HandleStreamingRequest processes a streaming chat completion request.
 // Returns a StreamingResponse with the raw SSE body from the provider.
 func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatCompletionRequest) (*StreamingResponse, error) {
+	// Compress messages via claw-compactor sidecar (if enabled)
+	req.Messages = r.Compressor.Compress(req.Messages)
+
 	// Normalize messages (flatten content arrays to strings)
 	normalizeMessages(req.Messages)
 
