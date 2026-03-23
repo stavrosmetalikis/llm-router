@@ -17,10 +17,12 @@ try:
     engine = FusionEngine()
     COMPACTOR_AVAILABLE = True
     logging.info("claw-compactor loaded successfully")
-except ImportError:
+except Exception as e:
+    import traceback
     engine = None
     COMPACTOR_AVAILABLE = False
-    logging.warning("claw-compactor not installed — compression disabled, returning messages unchanged")
+    logging.warning(f"claw-compactor could not be imported. Exception: {e}")
+    logging.warning(traceback.format_exc())
 
 
 @app.route("/compress", methods=["POST"])
