@@ -46,16 +46,17 @@ def compress():
         input_tokens = input_chars // 4
 
         # Compress via FusionEngine
-        compressed = engine.compress_messages(messages)
+        result = engine.compress_messages(messages)
+        compressed_msgs = result.get("messages", [])
 
         # Estimate output tokens
-        output_chars = sum(len(m.get("content", "")) for m in compressed)
+        output_chars = sum(len(m.get("content", "")) for m in compressed_msgs)
         output_tokens = output_chars // 4
         saved = max(0, input_tokens - output_tokens)
 
         logging.info(f"Compressed {len(messages)} messages: ~{input_tokens} → ~{output_tokens} tokens (saved ~{saved})")
 
-        return jsonify({"messages": compressed, "saved_tokens": saved})
+        return jsonify({"messages": compressed_msgs, "saved_tokens": saved})
 
     except Exception as e:
         logging.error(f"Compression failed: {e}")
