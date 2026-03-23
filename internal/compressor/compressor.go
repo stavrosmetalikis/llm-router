@@ -17,13 +17,16 @@ const sidecarURL = "http://localhost:8081/compress"
 // isCompactionRequest detects OpenClaw compaction requests by looking for explicit keywords
 // in the conversation's messages.
 func isCompactionRequest(messages []types.ChatMessage) bool {
-    for _, m := range messages {
-        content := fmt.Sprintf("%v", m.Content)
-        // Only skip for actual OpenClaw compaction flush requests
-        if strings.Contains(content, "NO_REPLY") ||
-           (m.Role == "system" && strings.Contains(content, "nearing compaction")) ||
-           (m.Role == "user" && strings.Contains(content, "Write any lasting notes to memory/")) {
-            return true
+    // Only skip when the LAST user message is the compaction flush prompt
+    for i := len(messages) - 1; i >= 0; i-- {
+        m := messages[i]
+        if m.Role == "user" {
+            content := fmt.Sprintf("%v", m.Content)
+            if strings.Contains(content, "Write any lasting notes to memory/") &&
+               strings.Contains(content, "NO_REPLY") {
+                return true
+            }
+            return false // last user message is not a compaction prompt — not a compaction request
         }
     }
     return false
