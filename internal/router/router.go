@@ -366,6 +366,20 @@ func (r *Router) callProvider(ctx context.Context, req *types.ChatCompletionRequ
 		completionResp.ID = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	}
 
+	// Estimate token usage if the provider didn't include it
+	if completionResp.Usage == nil {
+		promptTokens := estimateTokens(req)
+		completionTokens := 0
+		if len(completionResp.Choices) > 0 {
+			completionTokens = len(flattenContent(completionResp.Choices[0].Message.Content)) / 4
+		}
+		completionResp.Usage = &types.Usage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
+		}
+	}
+
 	return &completionResp, nil
 }
 

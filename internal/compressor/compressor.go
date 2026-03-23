@@ -3,14 +3,32 @@ package compressor
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"llm-router/internal/types"
 )
 
 const sidecarURL = "http://localhost:8081/compress"
+
+// isCompactionRequest detects OpenClaw compaction requests by looking for explicit keywords
+// in the conversation's messages.
+func isCompactionRequest(messages []types.ChatMessage) bool {
+    for _, m := range messages {
+        content := fmt.Sprintf("%v", m.Content)
+        if strings.Contains(content, "NO_REPLY") ||
+           strings.Contains(content, "memory/") ||
+           strings.Contains(content, "compaction") ||
+           strings.Contains(content, "summarize") ||
+           m.Role == "system" && strings.Contains(content, "nearing compaction") {
+            return true
+        }
+    }
+    return false
+}
 
 // compressRequest is the request body sent to the claw-compactor sidecar.
 type compressRequest struct {
@@ -43,12 +61,13 @@ func NewCompressor(enabled bool) *Compressor {
 // Compress sends messages to the claw-compactor sidecar for token compression.
 // Returns the original messages unchanged if:
 //   - compression is disabled
+//   - it is a compaction request (summarization)
 //   - the sidecar is unreachable
 //   - the sidecar returns an error
 //
 // This method never fails a request — compression is best-effort.
 func (c *Compressor) Compress(messages []types.ChatMessage) []types.ChatMessage {
-	if !c.enabled {
+	if !c.enabled || isCompactionRequest(messages) {
 		return messages
 	}
 

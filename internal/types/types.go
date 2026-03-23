@@ -59,6 +59,13 @@ type Choice struct {
 	Message      ChatCompletionMessage `json:"message"`
 }
 
+// Usage tracks token consumption for the request.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 // ChatCompletionResponse is the OpenAI-compatible response body.
 type ChatCompletionResponse struct {
 	ID      string   `json:"id"`
@@ -66,4 +73,5 @@ type ChatCompletionResponse struct {
 	Created int64    `json:"created"`
 	Model   string   `json:"model,omitempty"`
 	Choices []Choice `json:"choices"`
+	Usage   *Usage   `json:"usage,omitempty"`
 }
