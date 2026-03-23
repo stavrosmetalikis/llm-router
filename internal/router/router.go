@@ -110,6 +110,7 @@ type StreamingResponse struct {
 	Body       io.ReadCloser
 	StatusCode int
 	Model      string
+	Usage      *types.Usage
 }
 
 // sessionKeyFromRequest derives a session key from the request messages.
@@ -266,6 +267,14 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 		r.KeyPool.MarkSuccess(key)
 		r.StickyStore.Set(sessionID, key.Name)
 		sresp.Model = key.Model
+
+		promptTokens := estimateTokens(req)
+		sresp.Usage = &types.Usage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: 0, // unknown until stream completes
+			TotalTokens:      promptTokens,
+		}
+
 		return sresp, nil
 	}
 

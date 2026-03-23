@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -142,6 +143,17 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 
 		if err := scanner.Err(); err != nil {
 			log.Printf("[Server] SSE scan error: %v", err)
+		}
+
+		if sresp.Usage != nil {
+			usageData, _ := json.Marshal(map[string]interface{}{
+				"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"choices": []interface{}{},
+				"usage":   sresp.Usage,
+			})
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", usageData)
 		}
 
 		return false // Stop streaming
