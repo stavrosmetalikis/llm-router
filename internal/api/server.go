@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -129,11 +130,34 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 		// Increase scanner buffer for large chunks
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		contentSeen := false
 		for scanner.Scan() {
 			line := scanner.Text()
 
+			// Check if this chunk contains actual content
+			if strings.Contains(line, "\"content\":\"") && !strings.Contains(line, "\"content\":\"\"") {
+				contentSeen = true
+			}
+
 			// Intercept [DONE] — inject usage chunk before it
 			if line == "data: [DONE]" {
+				// Inject a nudge if the provider returned an empty stream
+				if !contentSeen {
+					log.Printf("[Server] Empty response detected, provider returned no content")
+					// Write a synthetic content chunk so OpenClaw gets something
+					nudge, _ := json.Marshal(map[string]interface{}{
+						"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+						"object":  "chat.completion.chunk",
+						"created": time.Now().Unix(),
+						"choices": []interface{}{map[string]interface{}{
+							"index": 0,
+							"delta": map[string]interface{}{"content": " "},
+							"finish_reason": nil,
+						}},
+					})
+					fmt.Fprintf(w, "data: %s\n\n", nudge)
+				}
+
 				if sresp.Usage != nil {
 					usageData, _ := json.Marshal(map[string]interface{}{
 						"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),

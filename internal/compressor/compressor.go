@@ -56,7 +56,7 @@ type Compressor struct {
 func NewCompressor(enabled bool) *Compressor {
 	return &Compressor{
 		enabled: enabled,
-		client:  &http.Client{Timeout: 200 * time.Millisecond},
+		client:  &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
