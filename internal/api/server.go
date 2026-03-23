@@ -131,31 +131,64 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 		contentSeen := false
+		var lastDataLine string
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
-			// Check if this chunk contains actual content
-			if strings.Contains(line, "\"content\":\"") && !strings.Contains(line, "\"content\":\"\"") {
+			// Track last data line to extract usage from it
+			if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
+				lastDataLine = line
+			}
+
+			// Track whether any real content was streamed
+			if strings.Contains(line, "\"content\":\"") &&
+			   !strings.Contains(line, "\"content\":\"\"") &&
+			   !strings.Contains(line, "\"content\":null") {
 				contentSeen = true
 			}
 
-			// Intercept [DONE] — inject usage chunk before it
 			if line == "data: [DONE]" {
-				// Inject a nudge if the provider returned an empty stream
+				// Try to extract real usage from the last provider chunk
+				if lastDataLine != "" {
+					jsonStr := strings.TrimPrefix(lastDataLine, "data: ")
+					var chunk map[string]interface{}
+					if err := json.Unmarshal([]byte(jsonStr), &chunk); err == nil {
+						if usageRaw, ok := chunk["usage"]; ok && usageRaw != nil {
+							if usageMap, ok := usageRaw.(map[string]interface{}); ok {
+								promptTokens := int(toFloat64(usageMap["prompt_tokens"]))
+								completionTokens := int(toFloat64(usageMap["completion_tokens"]))
+								totalTokens := int(toFloat64(usageMap["total_tokens"]))
+								if promptTokens > 0 {
+									sresp.Usage = &types.Usage{
+										PromptTokens:     promptTokens,
+										CompletionTokens: completionTokens,
+										TotalTokens:      totalTokens,
+									}
+									log.Printf("[Server] Real usage from provider: prompt=%d completion=%d total=%d",
+										promptTokens, completionTokens, totalTokens)
+								}
+							}
+						}
+					}
+				}
+
 				if !contentSeen {
 					log.Printf("[Server] Empty response detected, provider returned no content")
-					// Write a synthetic content chunk so OpenClaw gets something
 					nudge, _ := json.Marshal(map[string]interface{}{
 						"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 						"object":  "chat.completion.chunk",
 						"created": time.Now().Unix(),
 						"choices": []interface{}{map[string]interface{}{
-							"index": 0,
-							"delta": map[string]interface{}{"content": " "},
+							"index":        0,
+							"delta":        map[string]interface{}{"content": " "},
 							"finish_reason": nil,
 						}},
 					})
 					fmt.Fprintf(w, "data: %s\n\n", nudge)
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
 				}
 
 				if sresp.Usage != nil {
@@ -171,7 +204,7 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 						flusher.Flush()
 					}
 				}
-				// Now forward the actual [DONE]
+
 				fmt.Fprintf(w, "%s\n\n", line)
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
@@ -179,10 +212,7 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 				return false
 			}
 
-			// Forward the SSE line as-is
 			fmt.Fprintf(w, "%s\n", line)
-
-			// Flush after each line to ensure real-time delivery
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
@@ -194,4 +224,21 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 
 		return false // Stop streaming
 	})
+}
+
+// toFloat64 safely converts interface{} numeric values to float64.
+func toFloat64(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
+	}
 }
