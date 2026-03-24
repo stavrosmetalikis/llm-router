@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"llm-router/internal/router"
 	"llm-router/internal/types"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Server wraps a Gin engine and the LLM router.
@@ -125,6 +126,13 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 	c.Header("Connection", "keep-alive")
 	c.Header("Transfer-Encoding", "chunked")
 
+	// Capture prompt tokens from the router's estimate so we can
+	// report accurate usage after counting completion tokens from the stream.
+	promptTokens := 0
+	if sresp.Usage != nil {
+		promptTokens = sresp.Usage.PromptTokens
+	}
+
 	c.Stream(func(w io.Writer) bool {
 		scanner := bufio.NewScanner(sresp.Body)
 		// Increase scanner buffer for large chunks
@@ -133,46 +141,77 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 		contentSeen := false
 		var lastDataLine string
 
+		// Count completion tokens from streamed content characters.
+		completionChars := 0
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
-			// Track last data line to extract usage from it
+			// Track last data line to extract provider-supplied usage from it.
 			if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
 				lastDataLine = line
+
+				// Accumulate completion content characters for token estimation.
+				jsonStr := strings.TrimPrefix(line, "data: ")
+				var chunk map[string]interface{}
+				if err := json.Unmarshal([]byte(jsonStr), &chunk); err == nil {
+					if choices, ok := chunk["choices"].([]interface{}); ok {
+						for _, ch := range choices {
+							if chMap, ok := ch.(map[string]interface{}); ok {
+								if delta, ok := chMap["delta"].(map[string]interface{}); ok {
+									if content, ok := delta["content"].(string); ok {
+										completionChars += len(content)
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 
-			// Track whether any real content was streamed
+			// Track whether any real content was streamed.
 			if strings.Contains(line, "\"content\":\"") &&
-			   !strings.Contains(line, "\"content\":\"\"") &&
-			   !strings.Contains(line, "\"content\":null") {
+				!strings.Contains(line, "\"content\":\"\"") &&
+				!strings.Contains(line, "\"content\":null") {
 				contentSeen = true
 			}
 
 			if line == "data: [DONE]" {
-				// Try to extract real usage from the last provider chunk
+				// --- Determine final usage ---
+				// Prefer real usage from the last provider chunk if available.
+				finalUsage := &types.Usage{
+					PromptTokens:     promptTokens,
+					CompletionTokens: completionChars / 4,
+					TotalTokens:      promptTokens + completionChars/4,
+				}
+
 				if lastDataLine != "" {
 					jsonStr := strings.TrimPrefix(lastDataLine, "data: ")
 					var chunk map[string]interface{}
 					if err := json.Unmarshal([]byte(jsonStr), &chunk); err == nil {
 						if usageRaw, ok := chunk["usage"]; ok && usageRaw != nil {
 							if usageMap, ok := usageRaw.(map[string]interface{}); ok {
-								promptTokens := int(toFloat64(usageMap["prompt_tokens"]))
-								completionTokens := int(toFloat64(usageMap["completion_tokens"]))
-								totalTokens := int(toFloat64(usageMap["total_tokens"]))
-								if promptTokens > 0 {
-									sresp.Usage = &types.Usage{
-										PromptTokens:     promptTokens,
-										CompletionTokens: completionTokens,
-										TotalTokens:      totalTokens,
+								pt := int(toFloat64(usageMap["prompt_tokens"]))
+								ct := int(toFloat64(usageMap["completion_tokens"]))
+								tt := int(toFloat64(usageMap["total_tokens"]))
+								// Only trust provider usage if all three fields are present.
+								if pt > 0 && ct > 0 && tt > 0 {
+									finalUsage = &types.Usage{
+										PromptTokens:     pt,
+										CompletionTokens: ct,
+										TotalTokens:      tt,
 									}
-									log.Printf("[Server] Real usage from provider: prompt=%d completion=%d total=%d",
-										promptTokens, completionTokens, totalTokens)
+									log.Printf("[Server] Real usage from provider: prompt=%d completion=%d total=%d", pt, ct, tt)
 								}
 							}
 						}
 					}
 				}
 
+				log.Printf("[Server] Final usage: prompt=%d completion=%d total=%d",
+					finalUsage.PromptTokens, finalUsage.CompletionTokens, finalUsage.TotalTokens)
+
+				// Emit a space nudge if the provider returned no content at all.
 				if !contentSeen {
 					log.Printf("[Server] Empty response detected, provider returned no content")
 					nudge, _ := json.Marshal(map[string]interface{}{
@@ -180,8 +219,8 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 						"object":  "chat.completion.chunk",
 						"created": time.Now().Unix(),
 						"choices": []interface{}{map[string]interface{}{
-							"index":        0,
-							"delta":        map[string]interface{}{"content": " "},
+							"index":         0,
+							"delta":         map[string]interface{}{"content": " "},
 							"finish_reason": nil,
 						}},
 					})
@@ -191,18 +230,18 @@ func (s *Server) handleStreaming(c *gin.Context, req *types.ChatCompletionReques
 					}
 				}
 
-				if sresp.Usage != nil {
-					usageData, _ := json.Marshal(map[string]interface{}{
-						"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"choices": []interface{}{},
-						"usage":   sresp.Usage,
-					})
-					fmt.Fprintf(w, "data: %s\n\n", usageData)
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
+				// Always emit a usage chunk with accurate counts before [DONE].
+				// OpenClaw reads this to display the token counter.
+				usageData, _ := json.Marshal(map[string]interface{}{
+					"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"choices": []interface{}{},
+					"usage":   finalUsage,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", usageData)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
 				}
 
 				fmt.Fprintf(w, "%s\n\n", line)

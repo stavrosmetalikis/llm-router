@@ -164,14 +164,20 @@ func (r *Router) HandleRequest(ctx context.Context, req *types.ChatCompletionReq
 
 // executeNonStreamingPipeline runs the full pipeline for non-streaming requests.
 func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
-	// Step 2: Exact cache check
-	if cached := r.ExactCache.Get(ctx, req); cached != nil {
-		return cached, nil
+	// Compaction requests must never be served from cache — the summary
+	// is conversation-specific and must always reach the provider.
+	isCompaction := compressor.IsCompactionRequest(req.Messages)
+
+	// Step 2: Exact cache check (skip for compaction)
+	if !isCompaction {
+		if cached := r.ExactCache.Get(ctx, req); cached != nil {
+			return cached, nil
+		}
 	}
 
-	// Step 3-4: Semantic cache check (if embedder is available)
+	// Step 3-4: Semantic cache check (skip for compaction)
 	var currentEmbedding []float64
-	if r.Embedder.Enabled() {
+	if !isCompaction && r.Embedder.Enabled() {
 		lastUserMsg := getLastUserMessage(req.Messages)
 		if lastUserMsg != "" {
 			emb, err := r.Embedder.Embed(lastUserMsg)
@@ -186,7 +192,11 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 		}
 	}
 
-	// Compress messages via claw-compactor sidecar (if enabled)
+	if isCompaction {
+		log.Printf("[Router] Compaction request detected — bypassing cache and compression")
+	}
+
+	// Compress messages via claw-compactor sidecar (skipped automatically for compaction).
 	req.Messages = r.Compressor.Compress(req.Messages)
 
 	// Normalize messages (flatten content arrays to strings)
@@ -198,10 +208,12 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 		return nil, err
 	}
 
-	// Step 8: Cache the successful response
-	r.ExactCache.Set(ctx, req, resp)
-	if currentEmbedding != nil {
-		r.SemanticCache.Set(currentEmbedding, resp)
+	// Step 8: Cache the successful response (skip for compaction — never cache summaries)
+	if !isCompaction {
+		r.ExactCache.Set(ctx, req, resp)
+		if currentEmbedding != nil {
+			r.SemanticCache.Set(currentEmbedding, resp)
+		}
 	}
 
 	return resp, nil
@@ -210,7 +222,12 @@ func (r *Router) executeNonStreamingPipeline(ctx context.Context, req *types.Cha
 // HandleStreamingRequest processes a streaming chat completion request.
 // Returns a StreamingResponse with the raw SSE body from the provider.
 func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatCompletionRequest) (*StreamingResponse, error) {
-	// Compress messages via claw-compactor sidecar (if enabled)
+	isCompaction := compressor.IsCompactionRequest(req.Messages)
+	if isCompaction {
+		log.Printf("[Router] Compaction request detected — bypassing compression")
+	}
+
+	// Compress messages via claw-compactor sidecar (skipped automatically for compaction).
 	req.Messages = r.Compressor.Compress(req.Messages)
 
 	// Normalize messages (flatten content arrays to strings)
@@ -268,10 +285,12 @@ func (r *Router) HandleStreamingRequest(ctx context.Context, req *types.ChatComp
 		r.StickyStore.Set(sessionID, key.Name)
 		sresp.Model = key.Model
 
+		// Store the prompt token estimate so server.go can report accurate usage
+		// after counting completion tokens from the stream.
 		promptTokens := estimateTokens(req)
 		sresp.Usage = &types.Usage{
 			PromptTokens:     promptTokens,
-			CompletionTokens: 0, // unknown until stream completes
+			CompletionTokens: 0, // filled in by server.go after stream completes
 			TotalTokens:      promptTokens,
 		}
 

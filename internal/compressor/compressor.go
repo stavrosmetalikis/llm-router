@@ -14,22 +14,22 @@ import (
 
 const sidecarURL = "http://localhost:8081/compress"
 
-// isCompactionRequest detects OpenClaw compaction requests by looking for explicit keywords
-// in the conversation's messages.
-func isCompactionRequest(messages []types.ChatMessage) bool {
-    // Only skip when the LAST user message is the compaction flush prompt
-    for i := len(messages) - 1; i >= 0; i-- {
-        m := messages[i]
-        if m.Role == "user" {
-            content := fmt.Sprintf("%v", m.Content)
-            if strings.Contains(content, "Write any lasting notes to memory/") &&
-               strings.Contains(content, "NO_REPLY") {
-                return true
-            }
-            return false // last user message is not a compaction prompt — not a compaction request
-        }
-    }
-    return false
+// IsCompactionRequest detects OpenClaw compaction requests by looking for explicit keywords
+// in the conversation's messages. Exported so the router can also use it to skip caching.
+func IsCompactionRequest(messages []types.ChatMessage) bool {
+	// Only match when the LAST user message is the compaction flush prompt.
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role == "user" {
+			content := fmt.Sprintf("%v", m.Content)
+			if strings.Contains(content, "Write any lasting notes to memory/") &&
+				strings.Contains(content, "NO_REPLY") {
+				return true
+			}
+			return false // last user message is not a compaction prompt
+		}
+	}
+	return false
 }
 
 // compressRequest is the request body sent to the claw-compactor sidecar.
@@ -63,13 +63,13 @@ func NewCompressor(enabled bool) *Compressor {
 // Compress sends messages to the claw-compactor sidecar for token compression.
 // Returns the original messages unchanged if:
 //   - compression is disabled
-//   - it is a compaction request (summarization)
+//   - it is a compaction request (summarisation pass — must not be modified)
 //   - the sidecar is unreachable
 //   - the sidecar returns an error
 //
 // This method never fails a request — compression is best-effort.
 func (c *Compressor) Compress(messages []types.ChatMessage) []types.ChatMessage {
-	if !c.enabled || isCompactionRequest(messages) {
+	if !c.enabled || IsCompactionRequest(messages) {
 		return messages
 	}
 
