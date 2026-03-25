@@ -39,6 +39,7 @@ func main() {
 			Provider:         k.Provider,
 			Priority:         k.Priority,
 			MaxContextTokens: k.MaxContextTokens,
+			AgentRouter:      k.AgentRouter,
 		})
 	}
 	keyPool := pool.NewKeyPool(keys)
